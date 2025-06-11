@@ -50,6 +50,10 @@
                         <label for="text-column" class="form-label">Text Column Name (if known):</label>
                         <input class="form-control" type="text" id="text-column" placeholder="e.g., 'message', 'content', 'text'">
                     </div>
+                    <div class="mb-3">
+                        <label for="date-column" class="form-label">Date Column Name (Optional, for trend chart):</label>
+                        <input class="form-control" type="text" id="date-column" placeholder="e.g., 'date', 'timestamp', 'created_at'">
+                    </div>
                     <button type="submit" class="btn btn-primary">Analyze Sentiment</button>
                 </form>
             </div>
@@ -81,9 +85,16 @@
             </div>
             
             <div class="card mb-4">
-                <div class="card-header d-flex justify-content-between align-items-center">
-                    <h5>Detailed Results</h5>
-                    <button id="download-csv" class="btn btn-success">Download Results as CSV</button>
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">Detailed Results</h5>
+                        <div class="input-group input-group-sm" style="max-width: 400px;">
+                            <input type="text" class="form-control" id="keyword-input" placeholder="Enter comma-separated keywords...">
+                            <button class="btn btn-outline-secondary" type="button" id="apply-keyword-btn">Apply Keywords</button>
+                            <button class="btn btn-outline-danger" type="button" id="clear-keyword-btn">Clear</button>
+                        </div>
+                        <button id="download-csv" class="btn btn-success btn-sm">Download Results as CSV</button>
+                    </div>
                 </div>
                 <div class="card-body">
                     <div class="table-responsive">
@@ -99,6 +110,35 @@
                         </table>
                     </div>
                 </div>
+            </div>
+        </div>
+
+        <!-- N-gram Frequencies Section (initially hidden) -->
+        <div id="ngram-results-section" class="d-none">
+            <div class="card mb-4">
+                <div class="card-header">
+                    <div class="d-flex justify-content-between align-items-center">
+                        <h5 class="mb-0">N-gram Frequencies</h5>
+                        <div class="btn-group btn-group-sm" role="group" aria-label="N-gram type toggle">
+                            <button type="button" class="btn btn-outline-secondary active" id="show-bigrams-btn">Bigrams</button>
+                            <button type="button" class="btn btn-outline-secondary" id="show-trigrams-btn">Trigrams</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="card-body">
+                    <div id="bigram-frequency-display"></div>
+                    <div id="trigram-frequency-display" class="d-none"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Trend Chart Section (initially hidden) -->
+        <div id="trend-chart-section" class="d-none card mb-4">
+            <div class="card-header">
+                <h5>Sentiment Trend Over Time</h5>
+            </div>
+            <div class="card-body chart-container">
+                <canvas id="sentiment-trend-chart"></canvas>
             </div>
         </div>
     </div>
