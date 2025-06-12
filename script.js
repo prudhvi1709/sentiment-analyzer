@@ -1,597 +1,484 @@
 document.addEventListener('DOMContentLoaded', () => {
-    // DOM elements
-    const uploadForm = document.getElementById('upload-form');
-    const fileUpload = document.getElementById('file-upload');
-    const textColumnInput = document.getElementById('text-column');
-    const resultsSection = document.getElementById('results-section');
-    const loadingSpinner = document.getElementById('loading-spinner');
-    const downloadCsvBtn = document.getElementById('download-csv');
-    const ngramResultsSection = document.getElementById('ngram-results-section');
-    const showBigramsBtn = document.getElementById('show-bigrams-btn');
-    const showTrigramsBtn = document.getElementById('show-trigrams-btn');
-    const bigramFrequencyDisplay = document.getElementById('bigram-frequency-display');
-    const trigramFrequencyDisplay = document.getElementById('trigram-frequency-display');
-    const keywordInput = document.getElementById('keyword-input');
-    const applyKeywordBtn = document.getElementById('apply-keyword-btn');
-    const clearKeywordBtn = document.getElementById('clear-keyword-btn');
-    const dateColumnInput = document.getElementById('date-column');
-    const trendChartSection = document.getElementById('trend-chart-section');
-    const sentimentTrendChartCanvas = document.getElementById('sentiment-trend-chart').getContext('2d');
+    // State & DOM shortcuts
+    const $ = id => document.getElementById(id);
+    const data = {results: [], file: [], charts: {}, ngramThreshold: 1};
     
-    // State variables
-    let dataTable, sentimentChart, emotionChart, analysisResults = [], originalFileContents = [];
-    let topBigrams = [], topTrigrams = [];
-    let sentimentTrendChart;
-    
-    // Handle form submission
-    uploadForm.addEventListener('submit', async (e) => {
-        e.preventDefault();
-        const file = fileUpload.files[0];
-
-        // Clear/hide previous results sections
-        resultsSection.classList.add('d-none');
-        ngramResultsSection.classList.add('d-none');
-        bigramFrequencyDisplay.innerHTML = '';
-        trigramFrequencyDisplay.innerHTML = '';
-        trendChartSection.classList.add('d-none');
-        if (sentimentTrendChart) {
-            sentimentTrendChart.destroy();
-            sentimentTrendChart = null;
-        }
-        keywordInput.value = ''; // Clear keyword input
-
-        
-        if (!file || (!file.name.endsWith('.csv') && !file.name.endsWith('.xlsx'))) {
-            alert('Error: Please upload a valid .csv or .xlsx file.');
-            return;
-        }
-        
-        try {
-            loadingSpinner.style.display = 'flex';
-
-            originalFileContents = await parseFile(file);
-            if (originalFileContents.length === 0) throw new Error('No data found in file.');
-
-            const textColumn = getTextColumn(originalFileContents);
-            if (!textColumn) throw new Error('Could not determine text column. Please specify.');
-            
-            const actualDateColumn = getIdentifiedDateColumn(Object.keys(originalFileContents[0] || {}), dateColumnInput.value.trim());
-
-            const textsToAnalyze = originalFileContents.map((row, index) => ({
-                id: index,
-                text: row[textColumn] || "", // Ensure text is not null/undefined
-                originalRecord: row
-            }));
-            
-            if (textsToAnalyze.filter(t => t.text.trim() !== '').length === 0) throw new Error('No valid text data found in the specified text column.');
-            
-            analysisResults = await analyzeSentiment(textsToAnalyze);
-            displayResults(analysisResults); // This will show resultsSection
-
-            // N-gram analysis
-            const allTexts = analysisResults.map(r => r.text);
-            topBigrams = generateNgrams(allTexts, 2);
-            topTrigrams = generateNgrams(allTexts, 3);
-
-            displayNgrams(topBigrams, bigramFrequencyDisplay, "Bigrams");
-            trigramFrequencyDisplay.classList.add('d-none'); // Default to bigrams
-            bigramFrequencyDisplay.classList.remove('d-none');
-            showBigramsBtn.classList.add('active');
-            showTrigramsBtn.classList.remove('active');
-            ngramResultsSection.classList.remove('d-none');
-
-            // Trend chart
-            if (actualDateColumn) {
-                generateTrendChart(analysisResults, actualDateColumn);
-            }
-
-        } catch (error) {
-            alert('Error: ' + error.message);
-            // Ensure all sections are hidden on error
-            resultsSection.classList.add('d-none');
-            ngramResultsSection.classList.add('d-none');
-            trendChartSection.classList.add('d-none');
-        } finally {
-            loadingSpinner.style.display = 'none';
-        }
+    // Init event listeners
+    $('upload-form').addEventListener('submit', e => processFile(e));
+    $('load-sample-data').addEventListener('click', loadSampleData);
+    ['download-csv', 'show-bigrams-btn', 'show-trigrams-btn', 'apply-keyword-btn', 'clear-keyword-btn', 'apply-threshold-btn'].forEach((id, i) => {
+        $(id).addEventListener('click', () => [
+            downloadCSV, 
+            () => toggleNgramView('bigram'), 
+            () => toggleNgramView('trigram'), 
+            highlightKeywords, 
+            () => {
+                $('keyword-input').value = '';
+                if (data.table && data.results.length) {
+                    data.table.rows().every(function(idx) {
+                        this.cell(idx, 0).data(data.results[this.index()].text).draw('page');
+                    });
+                }
+            },
+            applyNgramThreshold
+        ][i]());
     });
     
-    // Parse uploaded file
-    async function parseFile(file) {
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            
-            reader.onload = (e) => {
-                try {
-                    const data = e.target.result;
-                    let parsedData = [];
-                    
-                    if (file.name.endsWith('.csv')) {
-                        const lines = data.split('\n');
-                        if (lines.length === 0) return reject(new Error('Empty CSV file.'));
-                        
-                        const headers = lines[0].split(',').map(h => h.trim().replace(/["']/g, ''));
-                        
-                        for (let i = 1; i < lines.length; i++) {
-                            if (lines[i].trim() === '') continue;
-                            
-                            // Handle quoted text with commas
-                            const values = [];
-                            let inQuote = false, currentValue = '';
-                            
-                            for (let j = 0; j < lines[i].length; j++) {
-                                const char = lines[i][j];
-                                if (char === '"' && (j === 0 || lines[i][j-1] !== '\\')) {
-                                    inQuote = !inQuote;
-                                } else if (char === ',' && !inQuote) {
-                                    values.push(currentValue.trim().replace(/^["']|["']$/g, ''));
-                                    currentValue = '';
-                                } else {
-                                    currentValue += char;
-                                }
-                            }
-                            values.push(currentValue.trim().replace(/^["']|["']$/g, ''));
-                            
-                            const row = {};
-                            headers.forEach((header, index) => row[header] = values[index] || '');
-                            parsedData.push(row);
-                        }
-                    } else {
-                        const workbook = XLSX.read(data, { type: 'binary' });
-                        parsedData = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
-                    }
-                    
-                    resolve(parsedData);
-                } catch (error) {
-                    reject(new Error('Error parsing file: ' + error.message));
+    // Add theme change listener to update charts on theme change
+    document.addEventListener('themeChanged', function(e) {
+        const isDarkTheme = e.detail.theme === 'dark';
+        
+        // Update chart colors if they exist
+        if (data.charts.sentiment) {
+            const colors = {
+                sentiment: {
+                    light: ['#4CAF50', '#FFC107', '#F44336', '#9E9E9E'],
+                    dark: ['#66BB6A', '#FFD54F', '#EF5350', '#BDBDBD']
+                },
+                emotion: {
+                    light: ['#FFEB3B', '#F44336', '#2196F3', '#9C27B0', '#FF9800', '#795548', '#9E9E9E'],
+                    dark: ['#FFF176', '#EF5350', '#42A5F5', '#AB47BC', '#FFA726', '#8D6E63', '#BDBDBD']
                 }
             };
             
-            reader.onerror = () => reject(new Error('Error reading file.'));
+            data.charts.sentiment.data.datasets[0].backgroundColor = colors.sentiment[isDarkTheme ? 'dark' : 'light'];
+            data.charts.sentiment.update();
+            
+            if (data.charts.emotion) {
+                data.charts.emotion.data.datasets[0].backgroundColor = colors.emotion[isDarkTheme ? 'dark' : 'light'];
+                data.charts.emotion.update();
+            }
+            
+            if (data.charts.trend) {
+                // Update trend chart colors
+                const trendColors = {
+                    positive: {
+                        light: { border: 'rgba(75, 192, 192, 1)', background: 'rgba(75, 192, 192, 0.2)' },
+                        dark: { border: 'rgba(102, 187, 106, 1)', background: 'rgba(102, 187, 106, 0.2)' }
+                    },
+                    negative: {
+                        light: { border: 'rgba(255, 99, 132, 1)', background: 'rgba(255, 99, 132, 0.2)' },
+                        dark: { border: 'rgba(239, 83, 80, 1)', background: 'rgba(239, 83, 80, 0.2)' }
+                    },
+                    neutral: {
+                        light: { border: 'rgba(255, 206, 86, 1)', background: 'rgba(255, 206, 86, 0.2)' },
+                        dark: { border: 'rgba(255, 213, 79, 1)', background: 'rgba(255, 213, 79, 0.2)' }
+                    }
+                };
+                
+                const theme = isDarkTheme ? 'dark' : 'light';
+                data.charts.trend.data.datasets[0].borderColor = trendColors.positive[theme].border;
+                data.charts.trend.data.datasets[0].backgroundColor = trendColors.positive[theme].background;
+                data.charts.trend.data.datasets[1].borderColor = trendColors.negative[theme].border;
+                data.charts.trend.data.datasets[1].backgroundColor = trendColors.negative[theme].background;
+                data.charts.trend.data.datasets[2].borderColor = trendColors.neutral[theme].border;
+                data.charts.trend.data.datasets[2].backgroundColor = trendColors.neutral[theme].background;
+                data.charts.trend.update();
+            }
+        }
+    });
+    
+    async function processFile(e) {
+        e.preventDefault();
+        // Reset UI
+        ['results-section', 'ngram-results-section', 'trend-chart-section'].forEach(id => $(id).classList.add('d-none'));
+        ['bigram-frequency-display', 'trigram-frequency-display'].forEach(id => $(id).innerHTML = '');
+        $('keyword-input').value = '';
+        Object.values(data.charts).forEach(chart => chart?.destroy());
+        data.charts = {};
+        
+        const file = $('file-upload').files[0];
+        if (!file || (!file.name.endsWith('.csv') && !file.name.endsWith('.xlsx'))) 
+            return alert('Please upload a valid CSV/XLSX file');
+        
+        try {
+            // Parse file & find columns
+            data.file = await parseFile(file);
+            if (!data.file.length) throw Error('No data found');
+            
+            const findCol = (userCol, commonCols) => {
+                if (userCol && data.file[0][userCol]) return userCol;
+                for (const col of commonCols) if (data.file[0][col]) return col;
+                return Object.keys(data.file[0])[0];
+            };
+            
+            const textCol = findCol($('text-column').value, ['text', 'message', 'content']);
+            const dateCol = findCol($('date-column').value, ['date', 'timestamp']);
+            if (!textCol) throw Error('Could not determine text column');
+            
+            // Process data
+            await analyzeTexts(textCol);
+            renderResults();
+            processNgrams();
+            if (dateCol) createTrendChart(dateCol);
+        } catch (err) {
+            alert('Error: ' + err.message);
+        } finally {
+            $('progress-container').classList.add('d-none');
+        }
+    }
+    
+    async function parseFile(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = e => {
+                try {
+                    if (file.name.endsWith('.csv')) {
+                        const lines = e.target.result.split('\n');
+                        if (!lines.length) return reject(Error('Empty file'));
+                        
+                        const headers = lines[0].split(',').map(h => h.trim().replace(/["']/g, ''));
+                        const rows = [];
+                        
+                        for (let i = 1; i < lines.length; i++) {
+                            if (!lines[i].trim()) continue;
+                            const values = parseCsvLine(lines[i]);
+                            rows.push(Object.fromEntries(headers.map((h, idx) => [h, values[idx] || ''])));
+                        }
+                        resolve(rows);
+                    } else {
+                        resolve(XLSX.utils.sheet_to_json(XLSX.read(e.target.result, {type: 'binary'}).Sheets[XLSX.read(e.target.result, {type: 'binary'}).SheetNames[0]]));
+                    }
+                } catch (err) { reject(Error('Parse error: ' + err.message)); }
+            };
+            reader.onerror = () => reject(Error('Read error'));
             file.name.endsWith('.csv') ? reader.readAsText(file) : reader.readAsBinaryString(file);
         });
     }
     
-    // Determine text column from data
-    function getTextColumn(data) {
-        if (data.length === 0) return null;
+    function parseCsvLine(line) {
+        const vals = [];
+        let inQuote = false, val = '';
         
-        const userColumn = textColumnInput.value.trim();
-        if (userColumn && data[0].hasOwnProperty(userColumn)) return userColumn;
-        
-        const possibleColumns = ['text', 'message', 'content', 'description', 'comment', 'feedback'];
-        for (const column of possibleColumns) {
-            if (data[0].hasOwnProperty(column)) return column;
+        for (let i = 0; i < line.length; i++) {
+            const c = line[i];
+            if (c === '"' && (i === 0 || line[i-1] !== '\\')) inQuote = !inQuote;
+            else if (c === ',' && !inQuote) { vals.push(val.trim().replace(/^["']|["']$/g, '')); val = ''; }
+            else val += c;
         }
-        
-        return Object.keys(data[0])[0];
+        vals.push(val.trim().replace(/^["']|["']$/g, ''));
+        return vals;
     }
     
-    // Determine Date column from data headers and user input
-    function getIdentifiedDateColumn(dataHeaders, userInput) {
-        if (userInput && dataHeaders.includes(userInput)) {
-            return userInput;
-        }
-        const commonDateColumns = ['date', 'timestamp', 'created_at', 'created', 'time', 'event_date', 'transaction_date'];
-        for (const col of commonDateColumns) {
-            const foundHeader = dataHeaders.find(header => header.toLowerCase() === col.toLowerCase());
-            if (foundHeader) return foundHeader;
-        }
-        return null;
-    }
-
-    // Process sentiment analysis 
-    async function analyzeSentiment(textsToAnalyze) {
-        const batchSize = 10;
-        const results = [];
+    async function analyzeTexts(textCol) {
+        data.results = [];
+        const texts = data.file.map((row, i) => ({id: i, text: row[textCol] || "", record: row}));
+        const batchSize = 10, progressBar = $('progress-bar');
         
-        for (let i = 0; i < textsToAnalyze.length; i += batchSize) {
-            const batch = textsToAnalyze.slice(i, i + batchSize);
-            const batchPromises = batch.map(async item => {
-                try {
-                    // Only send text to API if it's not empty
-                    const apiResult = item.text.trim() === '' ? { sentiment: 'Unknown', emotion: 'Unknown' } : await callAPI(item.text);
-                    return {
-                        id: item.id,
-                        text: item.text,
-                        originalRecord: item.originalRecord,
-                        sentiment: apiResult.sentiment || 'Unknown',
-                        emotion: apiResult.emotion || 'Unknown'
-                    };
-                } catch (error) {
-                    console.error('Error analyzing text:', item.text, error);
-                    return {
-                        id: item.id,
-                        text: item.text,
-                        originalRecord: item.originalRecord,
-                        sentiment: 'Error',
-                        emotion: 'Error'
-                    };
-                }
-            });
-            results.push(...await Promise.all(batchPromises));
-        }
-        return results;
-    }
-    
-    // Call sentiment analysis API
-    async function callAPI(text) {
-        const response = await fetch('https://llmfoundry.straive.com/openai/v1/chat/completions', {
-            method: 'POST',
-            credentials: 'include',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                model: "gpt-4o-mini",
-                messages: [
-                    { role: "system", content: "You are a sentiment analyzer. Respond only with JSON: {\"sentiment\": \"positive/negative/neutral\", \"emotion\": \"joy/anger/sadness/fear/surprise/disgust/neutral\"}" },
-                    { role: "user", content: `Analyze: "${text}"` }
-                ]
-            })
-        });
+        $('progress-container').classList.remove('d-none');
         
-        if (!response.ok) throw new Error(`API error: ${response.status}`);
-        
-        const data = await response.json();
-        try {
-            return JSON.parse(data.choices[0].message.content);
-        } catch (e) {
-            return { sentiment: 'Unknown', emotion: 'Unknown' };
-        }
-    }
-    
-    // Display results in UI
-    function displayResults(resultsData) {
-        resultsSection.classList.remove('d-none');
-        
-        if (dataTable) {
-            dataTable.destroy();
-            // Also clear keyword input as table is being reset
-            keywordInput.value = '';
-        }
-
-        // Ensure table is populated with plain text, not HTML-marked up text
-        const tableData = resultsData.map(r => ({
-            text: r.text, // Original text for display
-            sentiment: r.sentiment,
-            emotion: r.emotion
-            // originalRecord is part of analysisResults, but not directly bound to table columns here
-        }));
-
-        dataTable = new DataTable('#results-table', {
-            data: tableData,
-            columns: [
-                { data: 'text' },
-                { data: 'sentiment' },
-                { data: 'emotion' }
-            ],
-            responsive: true,
-            order: [[1, 'asc']]
-        });
-        
-        createCharts(resultsData);
-    }
-    
-    // Create charts for sentiment and emotion distribution
-    function createCharts(resultsData) {
-        const counts = { sentiment: {}, emotion: {} };
-        
-        resultsData.forEach(result => {
-            const sentiment = result.sentiment.charAt(0).toUpperCase() + result.sentiment.slice(1).toLowerCase();
-            const emotion = result.emotion.charAt(0).toUpperCase() + result.emotion.slice(1).toLowerCase();
+        for (let i = 0; i < texts.length; i += batchSize) {
+            const batch = texts.slice(i, i + batchSize);
+            const batchTexts = batch.map(item => item.text.trim()).filter(text => text.length > 0);
+            let results = [];
             
-            counts.sentiment[sentiment] = (counts.sentiment[sentiment] || 0) + 1;
-            counts.emotion[emotion] = (counts.emotion[emotion] || 0) + 1;
+            try {
+                if (batchTexts.length > 0) {
+                    const response = await fetch('https://llmfoundry.straive.com/openai/v1/chat/completions', {
+                        method: 'POST', credentials: 'include',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({
+                            model: "gpt-4.1-nano",
+                            messages: [
+                                {role: "system", content: "You are a sentiment analyzer. For each text input in the array, respond with JSON in the format: {\"result\": [{\"sentiment\": \"positive/negative/neutral\", \"emotion\": \"joy/anger/sadness/fear/surprise/disgust/neutral\"}]}"},
+                                {role: "user", content: `Analyze these texts: ${JSON.stringify(batchTexts)}`}
+                            ],
+                            response_format: {type: "json_object"}
+                        })
+                    });
+                    
+                    if (response.ok) {
+                        const content = (await response.json()).choices[0].message.content;
+                        results = (typeof content === 'string' ? JSON.parse(content) : content).result || [];
+                    }
+                }
+                
+                let resultIndex = 0;
+                batch.forEach(item => {
+                    const hasTrimmedText = item.text.trim().length > 0;
+                    const result = hasTrimmedText && resultIndex < results.length ? 
+                        results[resultIndex++] : {sentiment: 'Unknown', emotion: 'Unknown'};
+                    
+                    data.results.push({
+                        id: item.id, text: item.text, originalRecord: item.record,
+                        sentiment: result.sentiment || 'Unknown', emotion: result.emotion || 'Unknown'
+                    });
+                });
+            } catch (e) {
+                batch.forEach(item => data.results.push({
+                    id: item.id, text: item.text, originalRecord: item.record, 
+                    sentiment: 'Error', emotion: 'Error'
+                }));
+            }
+            
+            // Update progress bar
+            const progress = Math.min(100, Math.round(((i + batch.length) / texts.length) * 100));
+            progressBar.style.width = `${progress}%`;
+            progressBar.setAttribute('aria-valuenow', progress);
+            progressBar.textContent = `${progress}%`;
+        }
+        
+        $('progress-container').classList.add('d-none');
+    }
+    
+    function renderResults() {
+        $('results-section').classList.remove('d-none');
+        if (data.table) data.table.destroy();
+        
+        // Process sentiment/emotion counts and capitalize first letter
+        const counts = {sentiment: {}, emotion: {}};
+        data.results.forEach(r => {
+            const s = r.sentiment.charAt(0).toUpperCase() + r.sentiment.slice(1).toLowerCase();
+            const e = r.emotion.charAt(0).toUpperCase() + r.emotion.slice(1).toLowerCase();
+            counts.sentiment[s] = (counts.sentiment[s] || 0) + 1;
+            counts.emotion[e] = (counts.emotion[e] || 0) + 1;
         });
         
-        if (sentimentChart) sentimentChart.destroy();
-        if (emotionChart) emotionChart.destroy();
+        // Render table and charts
+        data.table = new DataTable('#results-table', {
+            data: data.results.map(r => ({text: r.text, sentiment: r.sentiment, emotion: r.emotion})),
+            columns: [{data: 'text'}, {data: 'sentiment'}, {data: 'emotion'}],
+            responsive: true, order: [[1, 'asc']]
+        });
+        
+        // Define theme-compatible colors
+        const getCurrentTheme = () => document.documentElement.getAttribute('data-bs-theme') || 'light';
+        const isDarkTheme = getCurrentTheme() === 'dark';
         
         const colors = {
-            sentiment: ['#4CAF50', '#FFC107', '#F44336', '#9E9E9E'],
-            emotion: ['#FFEB3B', '#F44336', '#2196F3', '#9C27B0', '#FF9800', '#795548', '#9E9E9E', '#607D8B']
+            sentiment: {
+                light: ['#4CAF50', '#FFC107', '#F44336', '#9E9E9E'],
+                dark: ['#66BB6A', '#FFD54F', '#EF5350', '#BDBDBD']
+            },
+            emotion: {
+                light: ['#FFEB3B', '#F44336', '#2196F3', '#9C27B0', '#FF9800', '#795548', '#9E9E9E'],
+                dark: ['#FFF176', '#EF5350', '#42A5F5', '#AB47BC', '#FFA726', '#8D6E63', '#BDBDBD']
+            }
         };
         
-        sentimentChart = new Chart(document.getElementById('sentiment-chart').getContext('2d'), {
+        const currentThemeColors = {
+            sentiment: colors.sentiment[isDarkTheme ? 'dark' : 'light'],
+            emotion: colors.emotion[isDarkTheme ? 'dark' : 'light']
+        };
+        
+        // Create charts
+        data.charts.sentiment = new Chart($('sentiment-chart').getContext('2d'), {
             type: 'pie',
-            data: {
-                labels: Object.keys(counts.sentiment),
-                datasets: [{
-                    data: Object.values(counts.sentiment),
-                    backgroundColor: colors.sentiment
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { position: 'right' } }
-            }
+            data: {labels: Object.keys(counts.sentiment), datasets: [{data: Object.values(counts.sentiment), backgroundColor: currentThemeColors.sentiment}]},
+            options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {position: 'right'}}}
         });
         
-        emotionChart = new Chart(document.getElementById('emotion-chart').getContext('2d'), {
+        data.charts.emotion = new Chart($('emotion-chart').getContext('2d'), {
             type: 'bar',
-            data: {
-                labels: Object.keys(counts.emotion),
-                datasets: [{
-                    label: 'Emotion Count',
-                    data: Object.values(counts.emotion),
-                    backgroundColor: colors.emotion
-                }]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                plugins: { legend: { display: false } },
-                scales: { y: { beginAtZero: true } }
-            }
+            data: {labels: Object.keys(counts.emotion), datasets: [{label: 'Emotion Count', data: Object.values(counts.emotion), backgroundColor: currentThemeColors.emotion}]},
+            options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}, scales: {y: {beginAtZero: true}}}
         });
     }
     
-    // Generate N-grams and count frequencies
-    function generateNgrams(texts, n) {
-        const ngramCounts = {};
-        const stopWords = ["a", "an", "the", "is", "and", "or", "but", "to", "of", "in", "on", "at", "for", "with", "by", "from", "about", "as", "into", "like", "through", "after", "over", "between", "out", "against", "during", "without", "before", "under", "around", "among"]; // Basic stop words
-
-        texts.forEach(text => {
-            // Convert to lowercase and remove punctuation (replace with space)
-            const cleanedText = text.toLowerCase().replace(/[.,?!;:"']/g, ' ');
-            const words = cleanedText.split(/\s+/).filter(word => word.length > 1 && !stopWords.includes(word)); // Filter short and stop words
-
-            if (words.length < n) return;
-
-            for (let i = 0; i <= words.length - n; i++) {
-                const ngram = words.slice(i, i + n).join(' ');
-                ngramCounts[ngram] = (ngramCounts[ngram] || 0) + 1;
-            }
-        });
-
-        // Convert to array and sort by frequency
-        return Object.entries(ngramCounts).sort((a, b) => b[1] - a[1]);
+    function processNgrams() {
+        const stopWords = ["a", "an", "the", "is", "and", "or", "but", "to", "of", "in", "on", "at", "for"];
+        const getNgrams = (n) => {
+            const counts = {};
+            data.results.forEach(r => {
+                const words = r.text.toLowerCase().replace(/[.,?!;:"']/g, ' ').split(/\s+/)
+                    .filter(w => w.length > 1 && !stopWords.includes(w));
+                if (words.length < n) return;
+                for (let i = 0; i <= words.length - n; i++) {
+                    const gram = words.slice(i, i + n).join(' ');
+                    counts[gram] = (counts[gram] || 0) + 1;
+                }
+            });
+            return Object.entries(counts).sort((a, b) => b[1] - a[1]);
+        };
+        
+        // Store all ngrams
+        data.allBigrams = getNgrams(2);
+        data.allTrigrams = getNgrams(3);
+        
+        // Apply threshold to create filtered ngrams
+        applyNgramThreshold();
     }
-
-    // Display N-grams in the UI
-    function displayNgrams(ngramData, displayElement, typeName) {
-        displayElement.innerHTML = ''; // Clear previous content
-
-        if (!ngramData || ngramData.length === 0) {
-            displayElement.innerHTML = `<p class="text-muted">No ${typeName.toLowerCase()} to display.</p>`;
+    
+    function applyNgramThreshold() {
+        const threshold = parseInt($('ngram-threshold').value) || 1;
+        data.ngramThreshold = Math.max(1, threshold);
+        
+        // Filter ngrams by threshold
+        data.bigrams = data.allBigrams ? data.allBigrams.filter(([_, count]) => count >= data.ngramThreshold) : [];
+        data.trigrams = data.allTrigrams ? data.allTrigrams.filter(([_, count]) => count >= data.ngramThreshold) : [];
+        
+        // Update the current view
+        const currentView = $('show-bigrams-btn').classList.contains('active') ? 'bigram' : 'trigram';
+        toggleNgramView(currentView);
+    }
+    
+    function createTrendChart(dateCol) {
+        const byDate = {};
+        data.results.forEach(r => {
+            const date = new Date(r.originalRecord[dateCol]);
+            if (isNaN(date)) return;
+            const day = date.toISOString().split('T')[0];
+            if (!byDate[day]) byDate[day] = {positive: 0, negative: 0, neutral: 0};
+            const sentiment = r.sentiment.toLowerCase();
+            if (['positive', 'negative', 'neutral'].includes(sentiment)) byDate[day][sentiment]++;
+        });
+        
+        const dates = Object.keys(byDate).sort();
+        if (dates.length) {
+            // Define theme-aware colors
+            const getCurrentTheme = () => document.documentElement.getAttribute('data-bs-theme') || 'light';
+            const isDarkTheme = getCurrentTheme() === 'dark';
+            
+            const trendColors = {
+                positive: {
+                    light: { border: 'rgba(75, 192, 192, 1)', background: 'rgba(75, 192, 192, 0.2)' },
+                    dark: { border: 'rgba(102, 187, 106, 1)', background: 'rgba(102, 187, 106, 0.2)' }
+                },
+                negative: {
+                    light: { border: 'rgba(255, 99, 132, 1)', background: 'rgba(255, 99, 132, 0.2)' },
+                    dark: { border: 'rgba(239, 83, 80, 1)', background: 'rgba(239, 83, 80, 0.2)' }
+                },
+                neutral: {
+                    light: { border: 'rgba(255, 206, 86, 1)', background: 'rgba(255, 206, 86, 0.2)' },
+                    dark: { border: 'rgba(255, 213, 79, 1)', background: 'rgba(255, 213, 79, 0.2)' }
+                }
+            };
+            
+            const theme = isDarkTheme ? 'dark' : 'light';
+            
+            data.charts.trend = new Chart($('sentiment-trend-chart').getContext('2d'), {
+                type: 'line',
+                data: {
+                    labels: dates,
+                    datasets: [
+                        {label: 'Positive', data: dates.map(d => byDate[d].positive), 
+                         borderColor: trendColors.positive[theme].border,
+                         backgroundColor: trendColors.positive[theme].background, 
+                         fill: false, tension: 0.1},
+                        {label: 'Negative', data: dates.map(d => byDate[d].negative), 
+                         borderColor: trendColors.negative[theme].border,
+                         backgroundColor: trendColors.negative[theme].background, 
+                         fill: false, tension: 0.1},
+                        {label: 'Neutral', data: dates.map(d => byDate[d].neutral), 
+                         borderColor: trendColors.neutral[theme].border,
+                         backgroundColor: trendColors.neutral[theme].background, 
+                         fill: false, tension: 0.1}
+                    ]
+                },
+                options: {
+                    responsive: true, maintainAspectRatio: false,
+                    scales: {y: {beginAtZero: true}, x: {title: {display: true, text: 'Date'}}},
+                    plugins: {legend: {position: 'top'}, tooltip: {mode: 'index', intersect: false}}
+                }
+            });
+            $('trend-chart-section').classList.remove('d-none');
+        }
+    }
+    
+    function toggleNgramView(type) {
+        const isBigram = type === 'bigram';
+        $('bigram-frequency-display').classList.toggle('d-none', !isBigram);
+        $('trigram-frequency-display').classList.toggle('d-none', isBigram);
+        $('show-bigrams-btn').classList.toggle('active', isBigram);
+        $('show-trigrams-btn').classList.toggle('active', !isBigram);
+        $('ngram-results-section').classList.remove('d-none');
+        
+        // Render ngrams
+        const container = $(isBigram ? 'bigram-frequency-display' : 'trigram-frequency-display');
+        const ngrams = isBigram ? data.bigrams : data.trigrams;
+        
+        // Clear container
+        container.innerHTML = '';
+        
+        if (!ngrams || !ngrams.length) {
+            container.innerHTML = `<p class="text-muted">No ${type}s to display with frequency ≥ ${data.ngramThreshold}.</p>`;
             return;
         }
-
-        const topN = ngramData.slice(0, 15); // Display top 15 N-grams
-
-        const ol = document.createElement('ol');
-        ol.classList.add('list-group', 'list-group-numbered');
-
-        topN.forEach(([ngram, count]) => {
-            const li = document.createElement('li');
-            li.classList.add('list-group-item', 'd-flex', 'justify-content-between', 'align-items-center');
-            li.textContent = ngram;
-
+        
+        const list = document.createElement('div');
+        list.classList.add('list-group');
+        
+        ngrams.slice(0, 15).forEach(([gram, count]) => {
+            const item = document.createElement('div');
+            item.classList.add('list-group-item', 'd-flex', 'gap-3', 'align-items-center');
+            
             const badge = document.createElement('span');
             badge.classList.add('badge', 'bg-primary', 'rounded-pill');
             badge.textContent = count;
-            li.appendChild(badge);
-
-            ol.appendChild(li);
-        });
-
-        displayElement.appendChild(ol);
-    }
-
-    // Generate Sentiment Trend Chart
-    function generateTrendChart(trendAnalysisResults, dateColumnName) {
-        if (sentimentTrendChart) {
-            sentimentTrendChart.destroy();
-            sentimentTrendChart = null;
-        }
-        trendChartSection.classList.add('d-none'); // Hide until data is ready
-
-        if (!dateColumnName || trendAnalysisResults.length === 0) {
-            console.warn("Date column not specified or no analysis results for trend chart.");
-            return;
-        }
-
-        const trendData = [];
-        trendAnalysisResults.forEach(result => {
-            const dateValue = result.originalRecord[dateColumnName];
-            const sentiment = result.sentiment; // Already in lowercase from API or 'Unknown'/'Error'
-
-            if (dateValue) {
-                const date = new Date(dateValue);
-                if (!isNaN(date.getTime())) {
-                    const day = new Date(date.getFullYear(), date.getMonth(), date.getDate()).toISOString().split('T')[0];
-                    trendData.push({ day, sentiment });
-                } else {
-                    console.warn(`Invalid date value encountered: ${dateValue}`);
-                }
-            }
-        });
-
-        if (trendData.length === 0) {
-            console.warn("No valid date entries found for trend chart.");
-            return; // No data to plot
-        }
-
-        const dailyCounts = trendData.reduce((acc, { day, sentiment }) => {
-            if (!acc[day]) {
-                acc[day] = { positive: 0, negative: 0, neutral: 0, unknown: 0, error: 0 };
-            }
-            const sentimentKey = sentiment.toLowerCase(); // Ensure consistent key usage
-            if (acc[day].hasOwnProperty(sentimentKey)) {
-                 acc[day][sentimentKey]++;
-            } else {
-                // This case should ideally not happen if sentiment values are controlled
-                console.warn(`Unexpected sentiment value: ${sentiment}`);
-                acc[day].unknown++; // Or handle as a generic 'other' category
-            }
-            return acc;
-        }, {});
-
-        const labels = Object.keys(dailyCounts).sort((a,b) => new Date(a) - new Date(b)); // Sort dates chronologically
-
-        if (labels.length === 0) {
-             console.warn("No data labels generated for trend chart after processing.");
-            return;
-        }
-
-        const positiveData = labels.map(day => dailyCounts[day].positive || 0);
-        const negativeData = labels.map(day => dailyCounts[day].negative || 0);
-        const neutralData = labels.map(day => dailyCounts[day].neutral || 0);
-
-        sentimentTrendChart = new Chart(sentimentTrendChartCanvas, {
-            type: 'line',
-            data: {
-                labels: labels,
-                datasets: [
-                    {
-                        label: 'Positive',
-                        data: positiveData,
-                        borderColor: 'rgba(75, 192, 192, 1)',
-                        backgroundColor: 'rgba(75, 192, 192, 0.2)',
-                        fill: false,
-                        tension: 0.1
-                    },
-                    {
-                        label: 'Negative',
-                        data: negativeData,
-                        borderColor: 'rgba(255, 99, 132, 1)',
-                        backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                        fill: false,
-                        tension: 0.1
-                    },
-                    {
-                        label: 'Neutral',
-                        data: neutralData,
-                        borderColor: 'rgba(255, 206, 86, 1)',
-                        backgroundColor: 'rgba(255, 206, 86, 0.2)',
-                        fill: false,
-                        tension: 0.1
-                    }
-                ]
-            },
-            options: {
-                responsive: true,
-                maintainAspectRatio: false,
-                scales: {
-                    y: {
-                        beginAtZero: true,
-                        title: { display: true, text: 'Number of Sentiments' }
-                    },
-                    x: {
-                         title: { display: true, text: 'Date' }
-                    }
-                },
-                plugins: {
-                    legend: { position: 'top' },
-                    tooltip: { mode: 'index', intersect: false }
-                }
-            }
-        });
-        trendChartSection.classList.remove('d-none'); // Show the chart section
-    }
-
-
-    // Handle CSV download
-    downloadCsvBtn.addEventListener('click', () => {
-        if (analysisResults.length === 0) return;
-        
-        // Use analysisResults which contains originalRecord to include all original columns plus analysis columns
-        const headers = originalFileContents.length > 0 ? Object.keys(originalFileContents[0]) : [];
-        const csvHeaders = [...headers, 'Sentiment', 'Emotion'].join(',');
-
-        const csvRows = analysisResults.map(row => {
-            const originalDataValues = headers.map(header => {
-                let value = row.originalRecord[header] || '';
-                // Escape double quotes and handle commas within values
-                value = String(value).replace(/"/g, '""');
-                if (String(value).includes(',')) {
-                    value = `"${value}"`;
-                }
-                return value;
-            });
-            return [...originalDataValues, row.sentiment, row.emotion].join(',');
+            badge.style.minWidth = '3rem';
+            badge.style.textAlign = 'center';
+            
+            const text = document.createElement('span');
+            text.textContent = gram;
+            text.classList.add('text-start');
+            
+            item.appendChild(badge);
+            item.appendChild(text);
+            list.appendChild(item);
         });
         
-        const csvContent = 'data:text/csv;charset=utf-8,' + csvHeaders + '\n' + csvRows.join('\n');
+        container.appendChild(list);
+    }
+    
+    function downloadCSV() {
+        if (!data.results.length) return;
+        
+        const headers = data.file.length ? Object.keys(data.file[0]) : [];
+        const csv = [
+            [...headers, 'Sentiment', 'Emotion'].join(','),
+            ...data.results.map(row => {
+                const vals = headers.map(h => {
+                    let val = row.originalRecord[h] || '';
+                    val = String(val).replace(/"/g, '""');
+                    return val.includes(',') ? `"${val}"` : val;
+                });
+                return [...vals, row.sentiment, row.emotion].join(',');
+            })
+        ].join('\n');
+        
         const link = document.createElement('a');
-        link.setAttribute('href', encodeURI(csvContent));
-        link.setAttribute('download', 'sentiment_analysis_results.csv');
-        document.body.appendChild(link);
+        link.href = 'data:text/csv;charset=utf-8,' + encodeURI(csv);
+        link.download = 'sentiment_analysis_results.csv';
         link.click();
-        document.body.removeChild(link);
-    });
-
-    // Event listener for "Show Bigrams" button
-    showBigramsBtn.addEventListener('click', () => {
-        if (!showBigramsBtn.classList.contains('active')) {
-            bigramFrequencyDisplay.classList.remove('d-none');
-            trigramFrequencyDisplay.classList.add('d-none');
-
-            showBigramsBtn.classList.add('active');
-            showTrigramsBtn.classList.remove('active');
-
-            // Re-display bigrams, which also handles empty state
-            displayNgrams(topBigrams, bigramFrequencyDisplay, "Bigrams");
-        }
-    });
-
-    // Event listener for "Show Trigrams" button
-    showTrigramsBtn.addEventListener('click', () => {
-        if (!showTrigramsBtn.classList.contains('active')) {
-            trigramFrequencyDisplay.classList.remove('d-none');
-            bigramFrequencyDisplay.classList.add('d-none');
-
-            showTrigramsBtn.classList.add('active');
-            showBigramsBtn.classList.remove('active');
-
-            // Re-display trigrams, which also handles empty state
-            displayNgrams(topTrigrams, trigramFrequencyDisplay, "Trigrams");
-        }
-    });
-
-    // Event listener for "Apply Keywords" button
-    applyKeywordBtn.addEventListener('click', () => {
-        if (!dataTable || analysisResults.length === 0) return;
-
-        const keywords = keywordInput.value.toLowerCase().split(',').map(k => k.trim()).filter(k => k !== '');
-
-        if (keywords.length === 0) {
-            // If no keywords, effectively clear existing highlights by restoring original text
-            clearKeywordBtn.click(); // Programmatically click the clear button
-            return;
-        }
-
-        dataTable.rows().every(function (rowIndex) {
-            const originalText = analysisResults[this.index()].text; // Get original text
-            let newTextHtml = originalText;
-            let hasHighlight = false;
-
-            keywords.forEach(keyword => {
-                // Escape regex special characters in keyword
-                const escapedKeyword = keyword.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&');
-                const regex = new RegExp(escapedKeyword, 'gi');
-
-                if (regex.test(originalText)) { // Test on original text
-                    hasHighlight = true;
-                    // Replace on newTextHtml to accumulate highlights if keywords overlap or multiple keywords exist
-                    newTextHtml = newTextHtml.replace(regex, (match) => `<mark class="bg-warning">${match}</mark>`);
-                }
+    }
+    
+    function highlightKeywords() {
+        if (!data.table || !data.results.length) return;
+        const keywords = $('keyword-input').value.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+        if (!keywords.length) return $('clear-keyword-btn').click();
+        
+        data.table.rows().every(function(idx) {
+            const text = data.results[this.index()].text;
+            let html = text;
+            keywords.forEach(kw => {
+                const regex = new RegExp(kw.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
+                if (regex.test(text)) html = html.replace(regex, m => `<mark class="bg-warning">${m}</mark>`);
             });
-
-            // Update cell data. DataTables will handle drawing.
-            // Ensure to update with original text if no keywords were found for this row but it might have been highlighted previously
-            this.cell(rowIndex, 0).data(newTextHtml).draw('page');
+            this.cell(idx, 0).data(html).draw('page');
         });
-    });
-
-    // Event listener for "Clear Keywords" button
-    clearKeywordBtn.addEventListener('click', () => {
-        keywordInput.value = '';
-        if (dataTable && analysisResults.length > 0) {
-            dataTable.rows().every(function (rowIndex) {
-                // Restore original text from analysisResults
-                this.cell(rowIndex, 0).data(analysisResults[this.index()].text).draw('page');
-            });
+    }
+    
+    async function loadSampleData() {
+        try {
+            $('progress-container').classList.remove('d-none');
+            
+            // Fetch the sample CSV file
+            const response = await fetch('sample_service_data.csv');
+            if (!response.ok) throw new Error('Failed to load sample data');
+            
+            const blob = await response.blob();
+            const file = new File([blob], 'sample_service_data.csv', { type: 'text/csv' });
+            
+            // Set the file in the file input
+            const dataTransfer = new DataTransfer();
+            dataTransfer.items.add(file);
+            $('file-upload').files = dataTransfer.files;
+            
+            // Submit the form automatically
+            $('upload-form').dispatchEvent(new Event('submit'));
+        } catch (err) {
+            alert('Error loading sample data: ' + err.message);
+            $('progress-container').classList.add('d-none');
         }
-    });
+    }
 });
