@@ -2,7 +2,33 @@
 import { html, render } from 'https://cdn.jsdelivr.net/npm/lit-html@2.8.0/lit-html.js';
 import { unsafeHTML } from 'https://cdn.jsdelivr.net/npm/lit-html@2.8.0/directives/unsafe-html.js';
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
+    // Check for token
+    let token;
+    try {
+        token = (await fetch("https://llmfoundry.straive.com/token", { credentials: "include" }).then((r) => r.json())).token;
+    } catch {
+        token = null;
+    }
+
+    // Get form elements
+    const uploadForm = document.getElementById('upload-form');
+    const fileUpload = document.getElementById('file-upload');
+    const analyzeBtn = uploadForm.querySelector('button[type="submit"]');
+    const loadSampleBtn = document.getElementById('load-sample-data');
+    
+    if (!token) {
+        // Disable form elements
+        fileUpload.disabled = true;
+        analyzeBtn.disabled = true;
+        loadSampleBtn.disabled = true;
+        
+        // Add sign-in button using lit-html
+        const signInTemplate = html`<a class="btn btn-primary mt-3" href="https://llmfoundry.straive.com/">Sign in to analyze</a>`;
+        render(signInTemplate, uploadForm);
+        return;
+    }
+
     // State & DOM shortcuts
     const $ = id => document.getElementById(id);
     const data = {results: [], file: [], charts: {}, ngramThreshold: 1, table: null}; // Ensure data.table can be nulled
