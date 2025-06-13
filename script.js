@@ -1,7 +1,9 @@
+import {html, render} from 'https://unpkg.com/lit-html?module';
+
 document.addEventListener('DOMContentLoaded', () => {
     // State & DOM shortcuts
     const $ = id => document.getElementById(id);
-    const data = {results: [], file: [], charts: {}, ngramThreshold: 1};
+    const data = {results: [], file: [], charts: {}, ngramThreshold: 1, table: null}; // Ensure data.table can be nulled
     
     // Init event listeners
     $('upload-form').addEventListener('submit', e => processFile(e));
@@ -14,11 +16,18 @@ document.addEventListener('DOMContentLoaded', () => {
             highlightKeywords, 
             () => {
                 $('keyword-input').value = '';
-                if (data.table && data.results.length) {
-                    data.table.rows().every(function(idx) {
-                        this.cell(idx, 0).data(data.results[this.index()].text).draw('page');
-                    });
-                }
+                // The following line is now broken due to data.table removal for #results-table.
+                // It will be fixed in a subsequent step.
+                // if (data.table && data.results.length) {
+                //     data.table.rows().every(function(idx) {
+                //         this.cell(idx, 0).data(data.results[this.index()].text).draw('page');
+                //     });
+                // }
+                // For now, to prevent errors, let's just clear highlights from data.results if any were stored there (they are not currently)
+                // Or, if we re-render with lit-html, it will use the original text.
+                // The actual fix is to re-render the lit-html table with new text.
+                // For now, let's ensure the input is cleared and then trigger a re-render.
+                updateDynamicResultsDisplay(); // Re-render to clear potential highlights if they were DOM based
             },
             applyNgramThreshold
         ][i]());
@@ -108,7 +117,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Process data
             await analyzeTexts(textCol);
-            renderResults();
+            // renderResults(); // Replaced by incremental updates
             processNgrams();
             if (dateCol) createTrendChart(dateCol);
         } catch (err) {
@@ -160,10 +169,20 @@ document.addEventListener('DOMContentLoaded', () => {
         return vals;
     }
     
+const progressBarTemplate = (progress) => html`
+    <h6 class="text-center">Processing texts...</h6>
+    <div class="progress" style="height: 25px;">
+        <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+             role="progressbar" style="width: ${progress}%"
+             aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
+    </div>
+`;
+
     async function analyzeTexts(textCol) {
-        data.results = [];
+        data.results = []; // Ensure it's fresh for each analysis
         const texts = data.file.map((row, i) => ({id: i, text: row[textCol] || "", record: row}));
-        const batchSize = 10, progressBar = $('progress-bar');
+        const batchSize = 10;
+        const progressContainer = document.getElementById('progress-container');
         
         $('progress-container').classList.remove('d-none');
         
@@ -213,17 +232,32 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Update progress bar
             const progress = Math.min(100, Math.round(((i + batch.length) / texts.length) * 100));
-            progressBar.style.width = `${progress}%`;
-            progressBar.setAttribute('aria-valuenow', progress);
-            progressBar.textContent = `${progress}%`;
+            render(progressBarTemplate(progress), progressContainer);
+            updateDynamicResultsDisplay(); // New call for incremental updates
         }
         
         $('progress-container').classList.add('d-none');
     }
+
+const tableRowTemplate = (result) => html`
+  <tr>
+    <td>${result.text}</td>
+    <td>${result.sentiment}</td>
+    <td>${result.emotion}</td>
+  </tr>
+`;
+
+const tableBodyContentTemplate = (results) => html`
+  ${results.map(result => tableRowTemplate(result))}
+`;
     
-    function renderResults() {
-        $('results-section').classList.remove('d-none');
-        if (data.table) data.table.destroy();
+    function updateDynamicResultsDisplay() {
+        if (data.results && data.results.length > 0) {
+            $('results-section').classList.remove('d-none');
+        } else {
+            $('results-section').classList.add('d-none');
+            return; // No data to display
+        }
         
         // Process sentiment/emotion counts and capitalize first letter
         const counts = {sentiment: {}, emotion: {}};
@@ -234,12 +268,20 @@ document.addEventListener('DOMContentLoaded', () => {
             counts.emotion[e] = (counts.emotion[e] || 0) + 1;
         });
         
-        // Render table and charts
-        data.table = new DataTable('#results-table', {
-            data: data.results.map(r => ({text: r.text, sentiment: r.sentiment, emotion: r.emotion})),
-            columns: [{data: 'text'}, {data: 'sentiment'}, {data: 'emotion'}],
-            responsive: true, order: [[1, 'asc']]
-        });
+        // lit-html table update
+        const tbodyElement = document.querySelector('#results-table tbody');
+        if (tbodyElement) {
+            render(tableBodyContentTemplate(data.results), tbodyElement);
+        }
+        // DataTable for #results-table is no longer used. data.table might be null or for other tables if any.
+        // Ensure data.table specific to #results-table is cleared if it was previously initialized.
+        if(data.table && data.table.table().node().id === 'results-table'){
+            // data.table.destroy(); // This would remove the table element itself if DataTable owned it.
+            // We are just removing its control over the tbody content.
+            // Since we are not re-initializing it for #results-table, this reference will just be stale for this specific table.
+            // It's better to nullify it if we are sure it's the one for #results-table.
+            // For now, the check `if (!data.table)` for initialization is removed, so it won't re-initialize.
+        }
         
         // Define theme-compatible colors
         const getCurrentTheme = () => document.documentElement.getAttribute('data-bs-theme') || 'light';
@@ -261,18 +303,32 @@ document.addEventListener('DOMContentLoaded', () => {
             emotion: colors.emotion[isDarkTheme ? 'dark' : 'light']
         };
         
-        // Create charts
-        data.charts.sentiment = new Chart($('sentiment-chart').getContext('2d'), {
-            type: 'pie',
-            data: {labels: Object.keys(counts.sentiment), datasets: [{data: Object.values(counts.sentiment), backgroundColor: currentThemeColors.sentiment}]},
-            options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {position: 'right'}}}
-        });
+        // Charts update
+        if (!data.charts.sentiment) {
+            data.charts.sentiment = new Chart($('sentiment-chart').getContext('2d'), {
+                type: 'pie',
+                data: {labels: Object.keys(counts.sentiment), datasets: [{data: Object.values(counts.sentiment), backgroundColor: currentThemeColors.sentiment}]},
+                options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {position: 'right'}}}
+            });
+        } else {
+            data.charts.sentiment.data.labels = Object.keys(counts.sentiment);
+            data.charts.sentiment.data.datasets[0].data = Object.values(counts.sentiment);
+            data.charts.sentiment.data.datasets[0].backgroundColor = currentThemeColors.sentiment; // Ensure colors update with theme
+            data.charts.sentiment.update();
+        }
         
-        data.charts.emotion = new Chart($('emotion-chart').getContext('2d'), {
-            type: 'bar',
-            data: {labels: Object.keys(counts.emotion), datasets: [{label: 'Emotion Count', data: Object.values(counts.emotion), backgroundColor: currentThemeColors.emotion}]},
-            options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}, scales: {y: {beginAtZero: true}}}
-        });
+        if (!data.charts.emotion) {
+            data.charts.emotion = new Chart($('emotion-chart').getContext('2d'), {
+                type: 'bar',
+                data: {labels: Object.keys(counts.emotion), datasets: [{label: 'Emotion Count', data: Object.values(counts.emotion), backgroundColor: currentThemeColors.emotion}]},
+                options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}, scales: {y: {beginAtZero: true}}}
+            });
+        } else {
+            data.charts.emotion.data.labels = Object.keys(counts.emotion);
+            data.charts.emotion.data.datasets[0].data = Object.values(counts.emotion);
+            data.charts.emotion.data.datasets[0].backgroundColor = currentThemeColors.emotion; // Ensure colors update with theme
+            data.charts.emotion.update();
+        }
     }
     
     function processNgrams() {
@@ -443,19 +499,20 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     function highlightKeywords() {
-        if (!data.table || !data.results.length) return;
-        const keywords = $('keyword-input').value.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
-        if (!keywords.length) return $('clear-keyword-btn').click();
+        // This function is now broken because data.table for #results-table is no longer used.
+        // It needs to be rewritten to work with lit-html rendered table.
+        // For now, it will likely cause an error or do nothing.
+        // Acknowledged as per plan.
+        console.warn("highlightKeywords is currently non-functional due to DataTable removal for #results-table.");
+        if (!data.results.length) return;
+        // const keywords = $('keyword-input').value.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
+        // if (!keywords.length) return $('clear-keyword-btn').click();
         
-        data.table.rows().every(function(idx) {
-            const text = data.results[this.index()].text;
-            let html = text;
-            keywords.forEach(kw => {
-                const regex = new RegExp(kw.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
-                if (regex.test(text)) html = html.replace(regex, m => `<mark class="bg-warning">${m}</mark>`);
-            });
-            this.cell(idx, 0).data(html).draw('page');
-        });
+        // // Placeholder: a real implementation would re-render the lit-html table
+        // // with new data that includes <mark> tags.
+        // // This is complex because data.results would need to store highlighted versions
+        // // or templates need to be more dynamic.
+        // console.log("Keyword highlighting needs reimplementation for lit-html table.");
     }
     
     async function loadSampleData() {
