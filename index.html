@@ -79,6 +79,9 @@
             </div>
         </div>
         
+        <!-- Progress Bar (initially hidden) -->
+        <div class="container mt-3 mb-3 d-none" id="progress-container"></div>
+
         <!-- Results Section (initially hidden) -->
         <div id="results-section" class="d-none">
             <div class="container mt-3 mb-3">
@@ -111,11 +114,6 @@
                     <div class="card-header">
                         <div class="d-flex justify-content-between align-items-center">
                             <h5 class="mb-0">Detailed Results</h5>
-                            <div class="input-group input-group-sm" style="max-width: 400px;">
-                                <input type="text" class="form-control" id="keyword-input" placeholder="Enter comma-separated keywords...">
-                                <button class="btn btn-outline-secondary" type="button" id="apply-keyword-btn">Apply Keywords</button>
-                                <button class="btn btn-outline-danger" type="button" id="clear-keyword-btn">Clear</button>
-                            </div>
                             <button id="download-csv" class="btn btn-success btn-sm">Download Results as CSV</button>
                         </div>
                     </div>
@@ -145,10 +143,10 @@
                         <div class="d-flex justify-content-between align-items-center">
                             <h5 class="mb-0">N-gram Frequencies</h5>
                             <div class="d-flex align-items-center gap-3">
-                                <div class="input-group input-group-sm">
-                                    <span class="input-group-text">Min Frequency</span>
-                                    <input type="number" class="form-control" id="ngram-threshold" value="1" min="1">
-                                    <button class="btn btn-outline-secondary" type="button" id="apply-threshold-btn">Apply</button>
+                                <div class="d-flex align-items-center gap-2" style="width: 100%;">
+                                    <span class="input-group-text" style="min-width: 110px;">Min Frequency</span>
+                                    <input type="range" class="form-range flex-grow-1" id="ngram-threshold" min="1" max="10" value="1" style="width: 200px; margin-bottom: 0;">
+                                    <span class="input-group-text" id="ngram-threshold-value" style="min-width: 40px; text-align: center;">1</span>
                                 </div>
                                 <div class="btn-group btn-group-sm" role="group" aria-label="N-gram type toggle">
                                     <button type="button" class="btn btn-outline-secondary active" id="show-bigrams-btn">Bigrams</button>
@@ -176,16 +174,6 @@
                         <canvas id="sentiment-trend-chart"></canvas>
                     </div>
                 </div>
-            </div>
-        </div>
-        
-        <!-- Progress Bar (initially hidden) -->
-        <div class="container mt-3 mb-3 d-none" id="progress-container">
-            <h6 class="text-center">Processing texts...</h6>
-            <div class="progress" style="height: 25px;">
-                <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated" 
-                     role="progressbar" style="width: 0%" 
-                     aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">0%</div>
             </div>
         </div>
     </div>

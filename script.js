@@ -1,27 +1,51 @@
+// Import lit-html using ES modules
+import { html, render } from 'https://cdn.jsdelivr.net/npm/lit-html@2.8.0/lit-html.js';
+import { unsafeHTML } from 'https://cdn.jsdelivr.net/npm/lit-html@2.8.0/directives/unsafe-html.js';
+
 document.addEventListener('DOMContentLoaded', () => {
     // State & DOM shortcuts
     const $ = id => document.getElementById(id);
-    const data = {results: [], file: [], charts: {}, ngramThreshold: 1};
+    const data = {results: [], file: [], charts: {}, ngramThreshold: 1, table: null}; // Ensure data.table can be nulled
     
+    // Templates
+    const progressBarTemplate = (progress) => html`
+        <h6 class="text-center">Processing texts...</h6>
+        <div class="progress" style="height: 25px;">
+            <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                 role="progressbar" style="width: ${progress}%"
+                 aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
+        </div>
+    `;
+
+    const tableRowTemplate = (result) => html`
+        <tr>
+            <td>${result.text}</td>
+            <td>${result.sentiment}</td>
+            <td>${result.emotion}</td>
+        </tr>
+    `;
+
+    const tableBodyContentTemplate = (results) => html`
+        ${results.map(result => tableRowTemplate(result))}
+    `;
+
     // Init event listeners
     $('upload-form').addEventListener('submit', e => processFile(e));
     $('load-sample-data').addEventListener('click', loadSampleData);
-    ['download-csv', 'show-bigrams-btn', 'show-trigrams-btn', 'apply-keyword-btn', 'clear-keyword-btn', 'apply-threshold-btn'].forEach((id, i) => {
+    ['download-csv', 'show-bigrams-btn', 'show-trigrams-btn'].forEach((id, i) => {
         $(id).addEventListener('click', () => [
             downloadCSV, 
             () => toggleNgramView('bigram'), 
-            () => toggleNgramView('trigram'), 
-            highlightKeywords, 
-            () => {
-                $('keyword-input').value = '';
-                if (data.table && data.results.length) {
-                    data.table.rows().every(function(idx) {
-                        this.cell(idx, 0).data(data.results[this.index()].text).draw('page');
-                    });
-                }
-            },
-            applyNgramThreshold
+            () => toggleNgramView('trigram')
         ][i]());
+    });
+
+    // Add slider event listener
+    $('ngram-threshold').addEventListener('input', (e) => {
+        const value = parseInt(e.target.value);
+        $('ngram-threshold-value').textContent = value;
+        data.ngramThreshold = value;
+        applyNgramThreshold();
     });
     
     // Add theme change listener to update charts on theme change
@@ -83,7 +107,6 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reset UI
         ['results-section', 'ngram-results-section', 'trend-chart-section'].forEach(id => $(id).classList.add('d-none'));
         ['bigram-frequency-display', 'trigram-frequency-display'].forEach(id => $(id).innerHTML = '');
-        $('keyword-input').value = '';
         Object.values(data.charts).forEach(chart => chart?.destroy());
         data.charts = {};
         
@@ -108,7 +131,7 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Process data
             await analyzeTexts(textCol);
-            renderResults();
+            // renderResults(); // Replaced by incremental updates
             processNgrams();
             if (dateCol) createTrendChart(dateCol);
         } catch (err) {
@@ -161,9 +184,10 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     
     async function analyzeTexts(textCol) {
-        data.results = [];
+        data.results = []; // Ensure it's fresh for each analysis
         const texts = data.file.map((row, i) => ({id: i, text: row[textCol] || "", record: row}));
-        const batchSize = 10, progressBar = $('progress-bar');
+        const batchSize = 10;
+        const progressContainer = document.getElementById('progress-container');
         
         $('progress-container').classList.remove('d-none');
         
@@ -213,17 +237,20 @@ document.addEventListener('DOMContentLoaded', () => {
             
             // Update progress bar
             const progress = Math.min(100, Math.round(((i + batch.length) / texts.length) * 100));
-            progressBar.style.width = `${progress}%`;
-            progressBar.setAttribute('aria-valuenow', progress);
-            progressBar.textContent = `${progress}%`;
+            render(progressBarTemplate(progress), progressContainer);
+            updateDynamicResultsDisplay(); // New call for incremental updates
         }
         
         $('progress-container').classList.add('d-none');
     }
-    
-    function renderResults() {
-        $('results-section').classList.remove('d-none');
-        if (data.table) data.table.destroy();
+
+    function updateDynamicResultsDisplay() {
+        if (data.results && data.results.length > 0) {
+            $('results-section').classList.remove('d-none');
+        } else {
+            $('results-section').classList.add('d-none');
+            return; // No data to display
+        }
         
         // Process sentiment/emotion counts and capitalize first letter
         const counts = {sentiment: {}, emotion: {}};
@@ -234,12 +261,47 @@ document.addEventListener('DOMContentLoaded', () => {
             counts.emotion[e] = (counts.emotion[e] || 0) + 1;
         });
         
-        // Render table and charts
-        data.table = new DataTable('#results-table', {
-            data: data.results.map(r => ({text: r.text, sentiment: r.sentiment, emotion: r.emotion})),
-            columns: [{data: 'text'}, {data: 'sentiment'}, {data: 'emotion'}],
-            responsive: true, order: [[1, 'asc']]
-        });
+        // Update table using lit-html
+        const tbodyElement = document.querySelector('#results-table tbody');
+        if (tbodyElement) {
+            render(tableBodyContentTemplate(data.results), tbodyElement);
+        }
+
+        // Initialize or update DataTable
+        if (!data.table) {
+            data.table = new DataTable('#results-table', {
+                pageLength: 10,
+                lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
+                order: [[1, 'asc']],
+                scrollY: '400px',
+                scrollCollapse: true,
+                dom: '<"top"lf>rt<"bottom"ip><"clear">',
+                language: {
+                    search: "Search:",
+                    lengthMenu: "Show _MENU_ entries",
+                    info: "Showing _START_ to _END_ of _TOTAL_ entries",
+                    infoEmpty: "Showing 0 to 0 of 0 entries",
+                    infoFiltered: "(filtered from _MAX_ total entries)",
+                    paginate: {
+                        first: "First",
+                        last: "Last",
+                        next: "Next",
+                        previous: "Previous"
+                    }
+                },
+                destroy: true, // Allow table to be reinitialized
+                retrieve: true // Retrieve existing table instance if available
+            });
+        } else {
+            // Clear and redraw the table with new data
+            data.table.clear();
+            data.table.rows.add(data.results.map(result => [
+                result.text,
+                result.sentiment,
+                result.emotion
+            ]));
+            data.table.draw();
+        }
         
         // Define theme-compatible colors
         const getCurrentTheme = () => document.documentElement.getAttribute('data-bs-theme') || 'light';
@@ -261,18 +323,32 @@ document.addEventListener('DOMContentLoaded', () => {
             emotion: colors.emotion[isDarkTheme ? 'dark' : 'light']
         };
         
-        // Create charts
-        data.charts.sentiment = new Chart($('sentiment-chart').getContext('2d'), {
-            type: 'pie',
-            data: {labels: Object.keys(counts.sentiment), datasets: [{data: Object.values(counts.sentiment), backgroundColor: currentThemeColors.sentiment}]},
-            options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {position: 'right'}}}
-        });
+        // Charts update
+        if (!data.charts.sentiment) {
+            data.charts.sentiment = new Chart($('sentiment-chart').getContext('2d'), {
+                type: 'pie',
+                data: {labels: Object.keys(counts.sentiment), datasets: [{data: Object.values(counts.sentiment), backgroundColor: currentThemeColors.sentiment}]},
+                options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {position: 'right'}}}
+            });
+        } else {
+            data.charts.sentiment.data.labels = Object.keys(counts.sentiment);
+            data.charts.sentiment.data.datasets[0].data = Object.values(counts.sentiment);
+            data.charts.sentiment.data.datasets[0].backgroundColor = currentThemeColors.sentiment; // Ensure colors update with theme
+            data.charts.sentiment.update();
+        }
         
-        data.charts.emotion = new Chart($('emotion-chart').getContext('2d'), {
-            type: 'bar',
-            data: {labels: Object.keys(counts.emotion), datasets: [{label: 'Emotion Count', data: Object.values(counts.emotion), backgroundColor: currentThemeColors.emotion}]},
-            options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}, scales: {y: {beginAtZero: true}}}
-        });
+        if (!data.charts.emotion) {
+            data.charts.emotion = new Chart($('emotion-chart').getContext('2d'), {
+                type: 'bar',
+                data: {labels: Object.keys(counts.emotion), datasets: [{label: 'Emotion Count', data: Object.values(counts.emotion), backgroundColor: currentThemeColors.emotion}]},
+                options: {responsive: true, maintainAspectRatio: false, plugins: {legend: {display: false}}, scales: {y: {beginAtZero: true}}}
+            });
+        } else {
+            data.charts.emotion.data.labels = Object.keys(counts.emotion);
+            data.charts.emotion.data.datasets[0].data = Object.values(counts.emotion);
+            data.charts.emotion.data.datasets[0].backgroundColor = currentThemeColors.emotion; // Ensure colors update with theme
+            data.charts.emotion.update();
+        }
     }
     
     function processNgrams() {
@@ -295,14 +371,21 @@ document.addEventListener('DOMContentLoaded', () => {
         data.allBigrams = getNgrams(2);
         data.allTrigrams = getNgrams(3);
         
+        // Set slider max value based on highest frequency
+        const maxFreq = Math.max(
+            ...data.allBigrams.map(([_, count]) => count),
+            ...data.allTrigrams.map(([_, count]) => count)
+        );
+        const slider = $('ngram-threshold');
+        slider.max = maxFreq;
+        slider.value = 1;
+        $('ngram-threshold-value').textContent = '1';
+        
         // Apply threshold to create filtered ngrams
         applyNgramThreshold();
     }
     
     function applyNgramThreshold() {
-        const threshold = parseInt($('ngram-threshold').value) || 1;
-        data.ngramThreshold = Math.max(1, threshold);
-        
         // Filter ngrams by threshold
         data.bigrams = data.allBigrams ? data.allBigrams.filter(([_, count]) => count >= data.ngramThreshold) : [];
         data.trigrams = data.allTrigrams ? data.allTrigrams.filter(([_, count]) => count >= data.ngramThreshold) : [];
@@ -442,32 +525,16 @@ document.addEventListener('DOMContentLoaded', () => {
         link.click();
     }
     
-    function highlightKeywords() {
-        if (!data.table || !data.results.length) return;
-        const keywords = $('keyword-input').value.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
-        if (!keywords.length) return $('clear-keyword-btn').click();
-        
-        data.table.rows().every(function(idx) {
-            const text = data.results[this.index()].text;
-            let html = text;
-            keywords.forEach(kw => {
-                const regex = new RegExp(kw.replace(/[-\/\\^$*+?.()|[\]{}]/g, '\\$&'), 'gi');
-                if (regex.test(text)) html = html.replace(regex, m => `<mark class="bg-warning">${m}</mark>`);
-            });
-            this.cell(idx, 0).data(html).draw('page');
-        });
-    }
-    
     async function loadSampleData() {
         try {
             $('progress-container').classList.remove('d-none');
             
             // Fetch the sample CSV file
-            const response = await fetch('sample_service_data.csv');
+            const response = await fetch('sample_data.csv');
             if (!response.ok) throw new Error('Failed to load sample data');
             
             const blob = await response.blob();
-            const file = new File([blob], 'sample_service_data.csv', { type: 'text/csv' });
+            const file = new File([blob], 'sample_data.csv', { type: 'text/csv' });
             
             // Set the file in the file input
             const dataTransfer = new DataTransfer();
