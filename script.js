@@ -1,36 +1,51 @@
-import {html, render} from 'https://unpkg.com/lit-html?module';
+// Import lit-html using ES modules
+import { html, render } from 'https://cdn.jsdelivr.net/npm/lit-html@2.8.0/lit-html.js';
+import { unsafeHTML } from 'https://cdn.jsdelivr.net/npm/lit-html@2.8.0/directives/unsafe-html.js';
 
 document.addEventListener('DOMContentLoaded', () => {
     // State & DOM shortcuts
     const $ = id => document.getElementById(id);
     const data = {results: [], file: [], charts: {}, ngramThreshold: 1, table: null}; // Ensure data.table can be nulled
     
+    // Templates
+    const progressBarTemplate = (progress) => html`
+        <h6 class="text-center">Processing texts...</h6>
+        <div class="progress" style="height: 25px;">
+            <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
+                 role="progressbar" style="width: ${progress}%"
+                 aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
+        </div>
+    `;
+
+    const tableRowTemplate = (result) => html`
+        <tr>
+            <td>${result.text}</td>
+            <td>${result.sentiment}</td>
+            <td>${result.emotion}</td>
+        </tr>
+    `;
+
+    const tableBodyContentTemplate = (results) => html`
+        ${results.map(result => tableRowTemplate(result))}
+    `;
+
     // Init event listeners
     $('upload-form').addEventListener('submit', e => processFile(e));
     $('load-sample-data').addEventListener('click', loadSampleData);
-    ['download-csv', 'show-bigrams-btn', 'show-trigrams-btn', 'apply-keyword-btn', 'clear-keyword-btn', 'apply-threshold-btn'].forEach((id, i) => {
+    ['download-csv', 'show-bigrams-btn', 'show-trigrams-btn'].forEach((id, i) => {
         $(id).addEventListener('click', () => [
             downloadCSV, 
             () => toggleNgramView('bigram'), 
-            () => toggleNgramView('trigram'), 
-            highlightKeywords, 
-            () => {
-                $('keyword-input').value = '';
-                // The following line is now broken due to data.table removal for #results-table.
-                // It will be fixed in a subsequent step.
-                // if (data.table && data.results.length) {
-                //     data.table.rows().every(function(idx) {
-                //         this.cell(idx, 0).data(data.results[this.index()].text).draw('page');
-                //     });
-                // }
-                // For now, to prevent errors, let's just clear highlights from data.results if any were stored there (they are not currently)
-                // Or, if we re-render with lit-html, it will use the original text.
-                // The actual fix is to re-render the lit-html table with new text.
-                // For now, let's ensure the input is cleared and then trigger a re-render.
-                updateDynamicResultsDisplay(); // Re-render to clear potential highlights if they were DOM based
-            },
-            applyNgramThreshold
+            () => toggleNgramView('trigram')
         ][i]());
+    });
+
+    // Add slider event listener
+    $('ngram-threshold').addEventListener('input', (e) => {
+        const value = parseInt(e.target.value);
+        $('ngram-threshold-value').textContent = value;
+        data.ngramThreshold = value;
+        applyNgramThreshold();
     });
     
     // Add theme change listener to update charts on theme change
@@ -92,7 +107,6 @@ document.addEventListener('DOMContentLoaded', () => {
         // Reset UI
         ['results-section', 'ngram-results-section', 'trend-chart-section'].forEach(id => $(id).classList.add('d-none'));
         ['bigram-frequency-display', 'trigram-frequency-display'].forEach(id => $(id).innerHTML = '');
-        $('keyword-input').value = '';
         Object.values(data.charts).forEach(chart => chart?.destroy());
         data.charts = {};
         
@@ -169,15 +183,6 @@ document.addEventListener('DOMContentLoaded', () => {
         return vals;
     }
     
-const progressBarTemplate = (progress) => html`
-    <h6 class="text-center">Processing texts...</h6>
-    <div class="progress" style="height: 25px;">
-        <div id="progress-bar" class="progress-bar progress-bar-striped progress-bar-animated"
-             role="progressbar" style="width: ${progress}%"
-             aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
-    </div>
-`;
-
     async function analyzeTexts(textCol) {
         data.results = []; // Ensure it's fresh for each analysis
         const texts = data.file.map((row, i) => ({id: i, text: row[textCol] || "", record: row}));
@@ -239,18 +244,6 @@ const progressBarTemplate = (progress) => html`
         $('progress-container').classList.add('d-none');
     }
 
-const tableRowTemplate = (result) => html`
-  <tr>
-    <td>${result.text}</td>
-    <td>${result.sentiment}</td>
-    <td>${result.emotion}</td>
-  </tr>
-`;
-
-const tableBodyContentTemplate = (results) => html`
-  ${results.map(result => tableRowTemplate(result))}
-`;
-    
     function updateDynamicResultsDisplay() {
         if (data.results && data.results.length > 0) {
             $('results-section').classList.remove('d-none');
@@ -268,19 +261,46 @@ const tableBodyContentTemplate = (results) => html`
             counts.emotion[e] = (counts.emotion[e] || 0) + 1;
         });
         
-        // lit-html table update
+        // Update table using lit-html
         const tbodyElement = document.querySelector('#results-table tbody');
         if (tbodyElement) {
             render(tableBodyContentTemplate(data.results), tbodyElement);
         }
-        // DataTable for #results-table is no longer used. data.table might be null or for other tables if any.
-        // Ensure data.table specific to #results-table is cleared if it was previously initialized.
-        if(data.table && data.table.table().node().id === 'results-table'){
-            // data.table.destroy(); // This would remove the table element itself if DataTable owned it.
-            // We are just removing its control over the tbody content.
-            // Since we are not re-initializing it for #results-table, this reference will just be stale for this specific table.
-            // It's better to nullify it if we are sure it's the one for #results-table.
-            // For now, the check `if (!data.table)` for initialization is removed, so it won't re-initialize.
+
+        // Initialize or update DataTable
+        if (!data.table) {
+            data.table = new DataTable('#results-table', {
+                pageLength: 10,
+                lengthMenu: [[10, 25, 50, 100, -1], [10, 25, 50, 100, "All"]],
+                order: [[1, 'asc']],
+                scrollY: '400px',
+                scrollCollapse: true,
+                dom: '<"top"lf>rt<"bottom"ip><"clear">',
+                language: {
+                    search: "Search:",
+                    lengthMenu: "Show _MENU_ entries",
+                    info: "Showing _START_ to _END_ of _TOTAL_ entries",
+                    infoEmpty: "Showing 0 to 0 of 0 entries",
+                    infoFiltered: "(filtered from _MAX_ total entries)",
+                    paginate: {
+                        first: "First",
+                        last: "Last",
+                        next: "Next",
+                        previous: "Previous"
+                    }
+                },
+                destroy: true, // Allow table to be reinitialized
+                retrieve: true // Retrieve existing table instance if available
+            });
+        } else {
+            // Clear and redraw the table with new data
+            data.table.clear();
+            data.table.rows.add(data.results.map(result => [
+                result.text,
+                result.sentiment,
+                result.emotion
+            ]));
+            data.table.draw();
         }
         
         // Define theme-compatible colors
@@ -351,14 +371,21 @@ const tableBodyContentTemplate = (results) => html`
         data.allBigrams = getNgrams(2);
         data.allTrigrams = getNgrams(3);
         
+        // Set slider max value based on highest frequency
+        const maxFreq = Math.max(
+            ...data.allBigrams.map(([_, count]) => count),
+            ...data.allTrigrams.map(([_, count]) => count)
+        );
+        const slider = $('ngram-threshold');
+        slider.max = maxFreq;
+        slider.value = 1;
+        $('ngram-threshold-value').textContent = '1';
+        
         // Apply threshold to create filtered ngrams
         applyNgramThreshold();
     }
     
     function applyNgramThreshold() {
-        const threshold = parseInt($('ngram-threshold').value) || 1;
-        data.ngramThreshold = Math.max(1, threshold);
-        
         // Filter ngrams by threshold
         data.bigrams = data.allBigrams ? data.allBigrams.filter(([_, count]) => count >= data.ngramThreshold) : [];
         data.trigrams = data.allTrigrams ? data.allTrigrams.filter(([_, count]) => count >= data.ngramThreshold) : [];
@@ -498,33 +525,16 @@ const tableBodyContentTemplate = (results) => html`
         link.click();
     }
     
-    function highlightKeywords() {
-        // This function is now broken because data.table for #results-table is no longer used.
-        // It needs to be rewritten to work with lit-html rendered table.
-        // For now, it will likely cause an error or do nothing.
-        // Acknowledged as per plan.
-        console.warn("highlightKeywords is currently non-functional due to DataTable removal for #results-table.");
-        if (!data.results.length) return;
-        // const keywords = $('keyword-input').value.toLowerCase().split(',').map(k => k.trim()).filter(Boolean);
-        // if (!keywords.length) return $('clear-keyword-btn').click();
-        
-        // // Placeholder: a real implementation would re-render the lit-html table
-        // // with new data that includes <mark> tags.
-        // // This is complex because data.results would need to store highlighted versions
-        // // or templates need to be more dynamic.
-        // console.log("Keyword highlighting needs reimplementation for lit-html table.");
-    }
-    
     async function loadSampleData() {
         try {
             $('progress-container').classList.remove('d-none');
             
             // Fetch the sample CSV file
-            const response = await fetch('sample_service_data.csv');
+            const response = await fetch('sample_data.csv');
             if (!response.ok) throw new Error('Failed to load sample data');
             
             const blob = await response.blob();
-            const file = new File([blob], 'sample_service_data.csv', { type: 'text/csv' });
+            const file = new File([blob], 'sample_data.csv', { type: 'text/csv' });
             
             // Set the file in the file input
             const dataTransfer = new DataTransfer();
