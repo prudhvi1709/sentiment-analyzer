@@ -46,8 +46,8 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tableRowTemplate = (result) => html`
         <tr>
             <td>${result.text}</td>
-            <td>${result.sentiment}</td>
-            <td>${result.emotion}</td>
+            <td>${result.sentiment} (${(result.sentiment_confidence * 100).toFixed(1)}%)</td>
+            <td>${result.emotion} (${(result.emotion_confidence * 100).toFixed(1)}%)</td>
         </tr>
     `;
 
@@ -82,8 +82,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         if (data.charts.sentiment) {
             const colors = {
                 sentiment: {
-                    light: ['#4CAF50', '#FFC107', '#F44336', '#9E9E9E'],
-                    dark: ['#66BB6A', '#FFD54F', '#EF5350', '#BDBDBD']
+                    light: ['#4CAF50', '#F44336', '#FFC107', '#9E9E9E'],
+                    dark: ['#66BB6A', '#EF5350', '#FFD54F', '#BDBDBD']
                 },
                 emotion: {
                     light: ['#FFEB3B', '#F44336', '#2196F3', '#9C27B0', '#FF9800', '#795548', '#9E9E9E'],
@@ -230,7 +230,7 @@ document.addEventListener('DOMContentLoaded', async () => {
                         body: JSON.stringify({
                             model: "gpt-4.1-nano",
                             messages: [
-                                {role: "system", content: "You are a sentiment analyzer. For each text input in the array, respond with JSON in the format: {\"result\": [{\"sentiment\": \"positive/negative/neutral\", \"emotion\": \"joy/anger/sadness/fear/surprise/disgust/neutral\"}]}"},
+                                {role: "system", content: "You are a sentiment analyzer. For each text input in the array, respond with JSON in the format: {\"result\": [{\"sentiment\": \"positive/negative/neutral\", \"sentiment_confidence\": 0.95, \"emotion\": \"<detected emotion>\", \"emotion_confidence\": 0.90}]}. Do not restrict emotions to predefined categories - detect the most appropriate emotion based on the text. Always include confidence scores between 0 and 1 for both sentiment and emotion classifications."},
                                 {role: "user", content: `Analyze these texts: ${JSON.stringify(batchTexts)}`}
                             ],
                             response_format: {type: "json_object"}
@@ -251,7 +251,10 @@ document.addEventListener('DOMContentLoaded', async () => {
                     
                     data.results.push({
                         id: item.id, text: item.text, originalRecord: item.record,
-                        sentiment: result.sentiment || 'Unknown', emotion: result.emotion || 'Unknown'
+                        sentiment: result.sentiment || 'Unknown', 
+                        sentiment_confidence: result.sentiment_confidence || 0,
+                        emotion: result.emotion || 'Unknown',
+                        emotion_confidence: result.emotion_confidence || 0
                     });
                 });
             } catch (e) {
@@ -302,6 +305,21 @@ document.addEventListener('DOMContentLoaded', async () => {
                 scrollY: '400px',
                 scrollCollapse: true,
                 dom: '<"top"lf>rt<"bottom"ip><"clear">',
+                columns: [
+                    { title: "Text" },
+                    { 
+                        title: "Sentiment",
+                        render: function(data, type, row) {
+                            return `${row[1]} (${(row[3] * 100).toFixed(1)}%)`;
+                        }
+                    },
+                    { 
+                        title: "Emotion",
+                        render: function(data, type, row) {
+                            return `${row[2]} (${(row[4] * 100).toFixed(1)}%)`;
+                        }
+                    }
+                ],
                 language: {
                     search: "Search:",
                     lengthMenu: "Show _MENU_ entries",
@@ -315,8 +333,8 @@ document.addEventListener('DOMContentLoaded', async () => {
                         previous: "Previous"
                     }
                 },
-                destroy: true, // Allow table to be reinitialized
-                retrieve: true // Retrieve existing table instance if available
+                destroy: true,
+                retrieve: true
             });
         } else {
             // Clear and redraw the table with new data
@@ -324,7 +342,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             data.table.rows.add(data.results.map(result => [
                 result.text,
                 result.sentiment,
-                result.emotion
+                result.emotion,
+                result.sentiment_confidence,
+                result.emotion_confidence
             ]));
             data.table.draw();
         }
@@ -335,8 +355,8 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const colors = {
             sentiment: {
-                light: ['#4CAF50', '#FFC107', '#F44336', '#9E9E9E'],
-                dark: ['#66BB6A', '#FFD54F', '#EF5350', '#BDBDBD']
+                light: ['#4CAF50', '#F44336', '#FFC107', '#9E9E9E'],
+                dark: ['#66BB6A', '#EF5350', '#FFD54F', '#BDBDBD']
             },
             emotion: {
                 light: ['#FFEB3B', '#F44336', '#2196F3', '#9C27B0', '#FF9800', '#795548', '#9E9E9E'],
@@ -534,14 +554,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         
         const headers = data.file.length ? Object.keys(data.file[0]) : [];
         const csv = [
-            [...headers, 'Sentiment', 'Emotion'].join(','),
+            [...headers, 'Sentiment', 'Sentiment Confidence', 'Emotion', 'Emotion Confidence'].join(','),
             ...data.results.map(row => {
                 const vals = headers.map(h => {
                     let val = row.originalRecord[h] || '';
                     val = String(val).replace(/"/g, '""');
                     return val.includes(',') ? `"${val}"` : val;
                 });
-                return [...vals, row.sentiment, row.emotion].join(',');
+                return [...vals, row.sentiment, row.sentiment_confidence, row.emotion, row.emotion_confidence].join(',');
             })
         ].join('\n');
         
